@@ -10,6 +10,7 @@ from multiple vendors.
 OpenSlide can read brightfield whole slide images in [several formats][]:
 
 * [Aperio][] (`.svs`, `.tif`)
+* [DICOM][] (`.dcm`)
 * [Hamamatsu][] (`.ndpi`, `.vms`, `.vmu`)
 * [Leica][] (`.scn`)
 * [MIRAX][] (`.mrxs`)
@@ -19,11 +20,12 @@ OpenSlide can read brightfield whole slide images in [several formats][]:
 * [Ventana][] (`.bif`, `.tif`)
 * [Generic tiled TIFF][] (`.tif`)
 
-OpenSlide can also provide access to textual metadata, as well as
+OpenSlide can also provide access to ICC profiles, textual metadata, and
 associated images such as a slide label and thumbnail.
 
 [several formats]: https://openslide.org/formats/
 [Aperio]: https://openslide.org/formats/aperio/
+[DICOM]: https://openslide.org/formats/dicom/
 [Hamamatsu]: https://openslide.org/formats/hamamatsu/
 [Leica]: https://openslide.org/formats/leica/
 [MIRAX]: https://openslide.org/formats/mirax/
@@ -60,27 +62,26 @@ more details.
 
 To build OpenSlide, you will need:
 
-- zlib
-- libpng
-- libjpeg
-- libtiff &ge; 4.0
-- OpenJPEG &ge; 2.1
+- Meson
+- cairo ≥ 1.2
 - GDK-PixBuf
+- glib ≥ 2.56
+- libdicom ≥ 1.0 (automatically built if missing)
+- libjpeg
+- libpng
+- libtiff ≥ 4.0
 - libxml2
-- SQLite &ge; 3.6.20
-- cairo &ge; 1.2
-- glib &ge; 2.56
+- OpenJPEG ≥ 2.1
+- SQLite ≥ 3.14
+- zlib
 
-Then follow the usual build instructions:
+Then:
 
 ```
-./configure
-make
-make install
+meson setup builddir
+meson compile -C builddir
+meson install -C builddir
 ```
-
-If building from the Git repository, you will first need to install
-Autoconf, Automake, libtool, and pkg-config, and run `autoreconf -i`.
 
 
 ## Acknowledgements
@@ -91,3 +92,8 @@ contributors.
 OpenSlide has been supported by the National Institutes of Health and
 the Clinical and Translational Science Institute at the University of
 Pittsburgh.
+
+Development of DICOM and ICC functionality was supported by NCI Imaging
+Data Commons and has been funded in whole or in part with Federal funds
+from the National Cancer Institute, National Institutes of Health, under
+Task Order No. HHSN26110071 under Contract No. HHSN261201500003l.

@@ -19,8 +19,6 @@
  *  <http://www.gnu.org/licenses/>.
  */
 
-#include <config.h>
-
 #include "openslide-private.h"
 #include "openslide-decode-tifflike.h"
 
@@ -195,9 +193,16 @@ static uint64_t fix_offset_ndpi(uint64_t diroff, uint64_t offset) {
     }									\
   } while (0)
 
-#define CONVERT_VALUES_RATIONAL(TO, FROM_TYPE, FROM, COUNT) do {	\
+// on error, frees TO and sets it to NULL
+#define CONVERT_VALUES_RATIONAL_OR_FAIL(TO, FROM_TYPE, FROM, COUNT) do {\
     const FROM_TYPE *from = (const FROM_TYPE *) FROM;			\
     for (int64_t i = 0; i < COUNT; i++) {				\
+      if (!from[i * 2 + 1]) {						\
+        g_clear_pointer(&TO, g_free);					\
+        g_set_error(err, OPENSLIDE_ERROR, OPENSLIDE_ERROR_FAILED,	\
+                    "Zero denominator in rational value");		\
+        return false;							\
+      }									\
       TO[i] = (double) from[i * 2] / (double) from[i * 2 + 1];		\
     }									\
   } while (0)
@@ -286,14 +291,14 @@ static bool set_item_values(struct tiff_item *item,
     // convert 2 longs into rational
     if (!item->floats) {
       ALLOC_VALUES_OR_FAIL(item->floats, double, item->count);
-      CONVERT_VALUES_RATIONAL(item->floats, uint32_t, buf, item->count);
+      CONVERT_VALUES_RATIONAL_OR_FAIL(item->floats, uint32_t, buf, item->count);
     }
     break;
   case TIFF_SRATIONAL:
     // convert 2 slongs into rational
     if (!item->floats) {
       ALLOC_VALUES_OR_FAIL(item->floats, double, item->count);
-      CONVERT_VALUES_RATIONAL(item->floats, int32_t, buf, item->count);
+      CONVERT_VALUES_RATIONAL_OR_FAIL(item->floats, int32_t, buf, item->count);
     }
     break;
 
@@ -332,9 +337,9 @@ static bool populate_item(struct _openslide_tifflike *tl,
   }
 
   uint64_t count = item->count;
-  int32_t value_size = get_value_size(item->type, &count);
+  uint32_t value_size = get_value_size(item->type, &count);
   g_assert(value_size);
-  ssize_t len = value_size * count;
+  size_t len = value_size * count;
 
   g_autofree void *buf = g_try_malloc(len);
   if (buf == NULL) {
@@ -343,12 +348,12 @@ static bool populate_item(struct _openslide_tifflike *tl,
     return false;
   }
 
-  //g_debug("reading tiff value: len: %"PRId64", offset %"PRIu64, len, item->offset);
+  //g_debug("reading tiff value: len: %"PRIu64", offset %"PRIu64, len, item->offset);
   if (!_openslide_fseek(f, item->offset, SEEK_SET, err)) {
     g_prefix_error(err, "Couldn't seek to read TIFF value: ");
     return false;
   }
-  if (_openslide_fread(f, buf, len) != (size_t) len) {
+  if (_openslide_fread(f, buf, len) != len) {
     g_set_error(err, OPENSLIDE_ERROR, OPENSLIDE_ERROR_FAILED,
                 "Couldn't read TIFF value");
     return false;
@@ -367,7 +372,7 @@ static void tiff_directory_destroy(struct tiff_directory *d) {
     return;
   }
   g_hash_table_unref(d->items);
-  g_slice_free(struct tiff_directory, d);
+  g_free(d);
 }
 
 typedef struct tiff_directory tiff_directory;
@@ -380,7 +385,7 @@ static void tiff_item_destroy(gpointer data) {
   g_free(item->sints);
   g_free(item->floats);
   g_free(item->buffer);
-  g_slice_free(struct tiff_item, item);
+  g_free(item);
 }
 
 static struct tiff_directory *read_directory(struct _openslide_file *f,
@@ -409,7 +414,7 @@ static struct tiff_directory *read_directory(struct _openslide_file *f,
                 "Loop detected");
     return NULL;
   }
-  uint64_t *key = g_slice_new(uint64_t);
+  uint64_t *key = g_new(uint64_t, 1);
   *key = off;
   g_hash_table_insert(loop_detector, key, NULL);
 
@@ -432,7 +437,7 @@ static struct tiff_directory *read_directory(struct _openslide_file *f,
 
 
   // initial checks passed, initialize the directory
-  g_autoptr(tiff_directory) d = g_slice_new0(struct tiff_directory);
+  g_autoptr(tiff_directory) d = g_new0(struct tiff_directory, 1);
   d->items = g_hash_table_new_full(g_direct_hash, g_direct_equal,
                                    NULL, tiff_item_destroy);
   d->offset = off;
@@ -452,7 +457,7 @@ static struct tiff_directory *read_directory(struct _openslide_file *f,
     //    g_debug(" tag: %d, type: %d, count: %"PRId64, tag, type, count);
 
     // allocate the item
-    struct tiff_item *item = g_slice_new0(struct tiff_item);
+    struct tiff_item *item = g_new0(struct tiff_item, 1);
     item->type = type;
     item->count = count;
     g_hash_table_insert(d->items, GINT_TO_POINTER(tag), item);
@@ -588,7 +593,7 @@ struct _openslide_tifflike *_openslide_tifflike_create(const char *filename,
   }
 
   // allocate struct
-  g_autoptr(_openslide_tifflike) tl = g_slice_new0(struct _openslide_tifflike);
+  g_autoptr(_openslide_tifflike) tl = g_new0(struct _openslide_tifflike, 1);
   tl->filename = g_strdup(filename);
   tl->big_endian = big_endian;
   tl->directories = g_ptr_array_new();
@@ -596,8 +601,7 @@ struct _openslide_tifflike *_openslide_tifflike_create(const char *filename,
 
   // initialize directory reading
   g_autoptr(GHashTable) loop_detector =
-    g_hash_table_new_full(g_int64_hash, g_int64_equal,
-                          _openslide_int64_free, NULL);
+    g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
   struct tiff_directory *first_dir = NULL;
 
   // NDPI needs special quirks, since it is classic TIFF pretending to be
@@ -681,7 +685,7 @@ void _openslide_tifflike_destroy(struct _openslide_tifflike *tl) {
   g_ptr_array_free(tl->directories, true);
   g_free(tl->filename);
   g_mutex_clear(&tl->value_lock);
-  g_slice_free(struct _openslide_tifflike, tl);
+  g_free(tl);
 }
 
 static struct tiff_item *get_item(struct _openslide_tifflike *tl,
@@ -1136,4 +1140,50 @@ bool _openslide_tifflike_init_properties_and_hash(openslide_t *osr,
   store_and_hash_properties(tl, property_dir, osr, quickhash1);
 
   return true;
+}
+
+void _openslide_tifflike_set_resolution_props(openslide_t *osr,
+                                              struct _openslide_tifflike *tl,
+                                              int64_t dir) {
+  uint64_t unit;
+  {
+    g_autoptr(GError) tmp_err = NULL;
+    unit =
+      _openslide_tifflike_get_uint(tl, dir, TIFFTAG_RESOLUTIONUNIT, &tmp_err);
+    if (g_error_matches(tmp_err, OPENSLIDE_ERROR, OPENSLIDE_ERROR_NO_VALUE)) {
+      unit = RESUNIT_INCH;  // default
+    } else if (tmp_err) {
+      return;
+    }
+  }
+
+  double dividend;
+  switch (unit) {
+  case RESUNIT_INCH:
+    dividend = 25400;
+    break;
+  case RESUNIT_CENTIMETER:
+    dividend = 10000;
+    break;
+  default:
+    return;
+  }
+
+  int32_t tags[] = {TIFFTAG_XRESOLUTION, TIFFTAG_YRESOLUTION};
+  const char *props[] =
+    {OPENSLIDE_PROPERTY_NAME_MPP_X, OPENSLIDE_PROPERTY_NAME_MPP_Y};
+  double values[G_N_ELEMENTS(tags)];
+  for (unsigned i = 0; i < G_N_ELEMENTS(tags); i++) {
+    g_autoptr(GError) tmp_err = NULL;
+    double res = _openslide_tifflike_get_float(tl, dir, tags[i], &tmp_err);
+    if (tmp_err || res == 0) {
+      return;
+    }
+    values[i] = dividend / res;
+  }
+  for (unsigned i = 0; i < G_N_ELEMENTS(tags); i++) {
+    g_hash_table_insert(osr->properties,
+                        g_strdup(props[i]),
+                        _openslide_format_double(values[i]));
+  }
 }

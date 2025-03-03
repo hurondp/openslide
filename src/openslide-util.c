@@ -20,8 +20,6 @@
  *
  */
 
-#include <config.h>
-
 #include "openslide-private.h"
 
 #include <stdio.h>
@@ -47,6 +45,8 @@ static const struct debug_option {
    "verify Hamamatsu restart markers"},
   {"performance", OPENSLIDE_DEBUG_PERFORMANCE,
    "log conditions causing poor performance"},
+  {"search", OPENSLIDE_DEBUG_SEARCH,
+   "log skipped files when searching directory"},
   {"sql", OPENSLIDE_DEBUG_SQL,
    "log SQL queries"},
   {"synthetic", OPENSLIDE_DEBUG_SYNTHETIC,
@@ -56,10 +56,6 @@ static const struct debug_option {
 };
 
 static uint32_t debug_flags;
-
-void _openslide_int64_free(gpointer data) {
-  g_slice_free(int64_t, data);
-}
 
 GKeyFile *_openslide_read_key_file(const char *filename, int32_t max_size,
                                    GKeyFileFlags flags, GError **err) {
@@ -337,26 +333,5 @@ void _openslide_performance_warn_once(gint *warned_flag,
       g_logv(G_LOG_DOMAIN, G_LOG_LEVEL_MESSAGE, str, ap);
       va_end(ap);
     }
-  }
-}
-
-struct _openslide_slice _openslide_slice_alloc(gsize len) {
-  struct _openslide_slice box = {
-    .p = g_slice_alloc(len),
-    .len = len,
-  };
-  return box;
-}
-
-void *_openslide_slice_steal(struct _openslide_slice *box) {
-  void *p = box->p;
-  box->p = NULL;
-  return p;
-}
-
-void _openslide_slice_free(struct _openslide_slice *box) {
-  if (box && box->p) {
-    g_slice_free1(box->len, box->p);
-    box->p = NULL;
   }
 }

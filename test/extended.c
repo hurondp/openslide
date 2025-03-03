@@ -25,7 +25,7 @@
 #include <unistd.h>
 #include <inttypes.h>
 
-#ifndef WIN32
+#ifndef _WIN32
 #include <sys/types.h>
 #include <fcntl.h>
 #endif
@@ -44,15 +44,12 @@ static void test_image_fetch(openslide_t *osr,
   for (int32_t level = 0; level < openslide_get_level_count(osr); level++) {
     openslide_read_region(osr, buf, x, y, level, w, h);
   }
-
-  const char *err = openslide_get_error(osr);
-  if (err) {
-    common_fail("Read failed: %"PRId64" %"PRId64" %"PRId64" %"PRId64": %s",
-                x, y, w, h, err);
-  }
+  common_fail_on_error(osr,
+                       "Read failed: %"PRId64" %"PRId64" %"PRId64" %"PRId64,
+                       x, y, w, h);
 }
 
-#if !defined(NONATOMIC_CLOEXEC) && !defined(WIN32)
+#if !defined(NONATOMIC_CLOEXEC) && !defined(_WIN32)
 static gint leak_test_running;  /* atomic ops only */
 
 static gpointer cloexec_thread(const gpointer prog) {
@@ -74,7 +71,7 @@ static gpointer cloexec_thread(const gpointer prog) {
         continue;
       }
       if (g_hash_table_lookup(seen, *line) == NULL) {
-        fprintf(stderr, "Exec child received leaked fd to %s\n", *line);
+        common_warn("Exec child received leaked fd to %s", *line);
         g_hash_table_insert(seen, g_strdup(*line), (void *) 1);
       }
     }
@@ -114,14 +111,14 @@ static void check_cloexec_leaks(const char *slide, void *prog,
   g_atomic_int_set(&leak_test_running, 0);
   g_thread_join(thr);
 }
-#else /* !NONATOMIC_CLOEXEC && !WIN32 */
+#else /* !NONATOMIC_CLOEXEC && !_WIN32 */
 static void child_check_open_fds(void) {}
 
 static void check_cloexec_leaks(const char *slide G_GNUC_UNUSED,
                                 void *prog G_GNUC_UNUSED,
                                 int64_t x G_GNUC_UNUSED,
                                 int64_t y G_GNUC_UNUSED) {}
-#endif /* !NONATOMIC_CLOEXEC && !WIN32 */
+#endif /* !NONATOMIC_CLOEXEC && !_WIN32 */
 
 #define CACHE_THREADS 5
 
@@ -217,28 +214,22 @@ int main(int argc, char **argv) {
   }
 
   openslide_t *osr = openslide_open(path);
-  if (!osr) {
-    common_fail("Couldn't open %s", path);
-  }
-  const char *err = openslide_get_error(osr);
-  if (err) {
-    common_fail("Open failed: %s", err);
-  }
+  common_fail_on_error(osr, "Couldn't open %s", path);
   openslide_close(osr);
 
   osr = openslide_open(path);
-  if (!osr || openslide_get_error(osr)) {
-    common_fail("Reopen failed");
-  }
+  common_fail_on_error(osr, "Reopen of %s failed", path);
 
   int64_t w, h;
   openslide_get_level0_dimensions(osr, &w, &h);
+  common_fail_on_error(osr, "Getting level 0 dimensions failed");
 
   int32_t levels = openslide_get_level_count(osr);
   for (int32_t i = -1; i < levels + 1; i++) {
     int64_t ww, hh;
     openslide_get_level_dimensions(osr, i, &ww, &hh);
     openslide_get_level_downsample(osr, i);
+    common_fail_on_error(osr, "Querying level %d failed", i);
   }
 
   openslide_get_best_level_for_downsample(osr, 0.8);
@@ -253,12 +244,15 @@ int main(int argc, char **argv) {
   openslide_get_best_level_for_downsample(osr, 100);
   openslide_get_best_level_for_downsample(osr, 1000);
   openslide_get_best_level_for_downsample(osr, 10000);
+  common_fail_on_error(osr, "Getting best level for downsample failed");
 
   // NULL buffer
   openslide_read_region(osr, NULL, 0, 0, 0, 1000, 1000);
+  common_fail_on_error(osr, "Reading NULL buffer failed");
 
   // empty region
   openslide_read_region(osr, NULL, 0, 0, 0, 0, 0);
+  common_fail_on_error(osr, "Reading null region failed");
 
   // read properties
   const char * const *property_names = openslide_get_property_names(osr);
@@ -267,10 +261,12 @@ int main(int argc, char **argv) {
     openslide_get_property_value(osr, name);
     property_names++;
   }
+  common_fail_on_error(osr, "Reading properties failed");
 
   // read associated images
   const char * const *associated_image_names =
     openslide_get_associated_image_names(osr);
+  common_fail_on_error(osr, "Listing associated images failed");
   while (*associated_image_names) {
     int64_t w, h;
     const char *name = *associated_image_names;
@@ -279,8 +275,24 @@ int main(int argc, char **argv) {
     g_autofree uint32_t *buf = g_new(uint32_t, w * h);
     openslide_read_associated_image(osr, name, buf);
 
+    int64_t icc_len =
+      openslide_get_associated_image_icc_profile_size(osr, name);
+    if (icc_len >= 0) {
+      g_autofree void *buf = g_malloc(icc_len);
+      openslide_read_associated_image_icc_profile(osr, name, buf);
+    }
+
+    common_fail_on_error(osr, "Reading associated image \"%s\" failed", name);
     associated_image_names++;
   }
+
+  // read ICC profile
+  int64_t icc_len = openslide_get_icc_profile_size(osr);
+  if (icc_len >= 0) {
+    g_autofree void *buf = g_malloc(icc_len);
+    openslide_read_icc_profile(osr, buf);
+  }
+  common_fail_on_error(osr, "Reading ICC profile failed");
 
   test_image_fetch(osr, -10, -10, 200, 200);
   test_image_fetch(osr, w/2, h/2, 500, 500);

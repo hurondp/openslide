@@ -27,8 +27,6 @@
  *
  */
 
-#include <config.h>
-
 #include "openslide-private.h"
 #include "openslide-decode-tiff.h"
 #include "openslide-decode-tifflike.h"
@@ -124,18 +122,18 @@ struct dimension {
 
 static void destroy_area(struct area *area) {
   _openslide_grid_destroy(area->grid);
-  g_slice_free(struct area, area);
+  g_free(area);
 }
 
 static void destroy_level(struct level *l) {
   g_ptr_array_free(l->areas, true);
-  g_slice_free(struct level, l);
+  g_free(l);
 }
 
 static void destroy(openslide_t *osr) {
   struct leica_ops_data *data = osr->data;
   _openslide_tiffcache_destroy(data->tc);
-  g_slice_free(struct leica_ops_data, data);
+  g_free(data);
 
   for (int32_t i = 0; i < osr->level_count; i++) {
     destroy_level((struct level *) osr->levels[i]);
@@ -162,22 +160,22 @@ static bool read_tile(openslide_t *osr,
                                             args->area, tile_col, tile_row,
                                             &cache_entry);
   if (!tiledata) {
-    g_auto(_openslide_slice) box = _openslide_slice_alloc(tw * th * 4);
+    g_autofree uint32_t *buf = g_malloc(tw * th * 4);
     if (!_openslide_tiff_read_tile(tiffl, args->tiff,
-                                   box.p, tile_col, tile_row,
+                                   buf, tile_col, tile_row,
                                    err)) {
       return false;
     }
 
     // clip, if necessary
-    if (!_openslide_tiff_clip_tile(tiffl, box.p,
+    if (!_openslide_tiff_clip_tile(tiffl, buf,
                                    tile_col, tile_row,
                                    err)) {
       return false;
     }
 
     // put it in the cache
-    tiledata = _openslide_slice_steal(&box);
+    tiledata = g_steal_pointer(&buf);
     _openslide_cache_put(osr->cache,
 			 args->area, tile_col, tile_row,
 			 tiledata, tw * th * 4,
@@ -281,7 +279,7 @@ static bool leica_detect(const char *filename G_GNUC_UNUSED,
 }
 
 static void dimension_free(struct dimension *dimension) {
-  g_slice_free(struct dimension, dimension);
+  g_free(dimension);
 }
 
 static void image_free(struct image *image) {
@@ -292,13 +290,13 @@ static void image_free(struct image *image) {
   g_free(image->illumination_source);
   g_free(image->objective);
   g_free(image->aperture);
-  g_slice_free(struct image, image);
+  g_free(image);
 }
 
 static void collection_free(struct collection *collection) {
   g_ptr_array_free(collection->images, true);
   g_free(collection->barcode);
-  g_slice_free(struct collection, collection);
+  g_free(collection);
 }
 
 typedef struct collection collection;
@@ -314,20 +312,6 @@ static int dimension_compare(const void *a, const void *b) {
     return 0;
   } else {
     return 1;
-  }
-}
-
-static void set_resolution_prop(openslide_t *osr, TIFF *tiff,
-                                const char *property_name,
-                                ttag_t tag) {
-  float f;
-  uint16_t unit;
-
-  if (TIFFGetFieldDefaulted(tiff, TIFFTAG_RESOLUTIONUNIT, &unit) &&
-      TIFFGetField(tiff, tag, &f) &&
-      unit == RESUNIT_CENTIMETER) {
-    g_hash_table_insert(osr->properties, g_strdup(property_name),
-                        _openslide_format_double(10000.0 / f));
   }
 }
 
@@ -407,7 +391,7 @@ static struct collection *parse_xml_description(const char *xml,
   }
 
   // create collection struct
-  g_autoptr(collection) collection = g_slice_new0(struct collection);
+  g_autoptr(collection) collection = g_new0(struct collection, 1);
   collection->images =
     g_ptr_array_new_with_free_func((GDestroyNotify) image_free);
 
@@ -457,7 +441,7 @@ static struct collection *parse_xml_description(const char *xml,
     }
 
     // create image struct
-    struct image *image = g_slice_new0(struct image);
+    struct image *image = g_new0(struct image, 1);
     image->dimensions =
       g_ptr_array_new_with_free_func((GDestroyNotify) dimension_free);
     g_ptr_array_add(collection->images, image);
@@ -505,7 +489,7 @@ static struct collection *parse_xml_description(const char *xml,
         continue;
       }
 
-      struct dimension *dimension = g_slice_new0(struct dimension);
+      struct dimension *dimension = g_new0(struct dimension, 1);
       g_ptr_array_add(image->dimensions, dimension);
 
       PARSE_INT_ATTRIBUTE_OR_RETURN(dimension_node, LEICA_ATTR_IFD,
@@ -624,7 +608,7 @@ static bool create_levels_from_collection(openslide_t *osr,
       struct level *l;
       if (image == first_main_image) {
         // no level yet; create it
-        l = g_slice_new0(struct level);
+        l = g_new0(struct level, 1);
         l->areas =
           g_ptr_array_new_with_free_func((GDestroyNotify) destroy_area);
         l->nm_per_pixel = dimension->nm_per_pixel;
@@ -652,7 +636,7 @@ static bool create_levels_from_collection(openslide_t *osr,
       }
 
       // create area
-      struct area *area = g_slice_new0(struct area);
+      struct area *area = g_new0(struct area, 1);
       struct _openslide_tiff_level *tiffl = &area->tiffl;
       g_ptr_array_add(l->areas, area);
 
@@ -821,19 +805,13 @@ static bool leica_open(openslide_t *osr, const char *filename,
   g_hash_table_remove(osr->properties, "tiff.ImageDescription");
 
   // set MPP properties
-  if (!_openslide_tiff_set_dir(ct.tiff, property_dir, err)) {
-    return false;
-  }
-  set_resolution_prop(osr, ct.tiff, OPENSLIDE_PROPERTY_NAME_MPP_X,
-                      TIFFTAG_XRESOLUTION);
-  set_resolution_prop(osr, ct.tiff, OPENSLIDE_PROPERTY_NAME_MPP_Y,
-                      TIFFTAG_YRESOLUTION);
+  _openslide_tifflike_set_resolution_props(osr, tl, property_dir);
 
   // set region bounds properties
   set_region_bounds_props(osr, level0);
 
   // allocate private data
-  struct leica_ops_data *data = g_slice_new0(struct leica_ops_data);
+  struct leica_ops_data *data = g_new0(struct leica_ops_data, 1);
   data->tc = g_steal_pointer(&tc);
 
   // store osr data

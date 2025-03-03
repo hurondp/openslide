@@ -27,8 +27,6 @@
  *
  */
 
-#include <config.h>
-
 #include "openslide-private.h"
 #include "openslide-decode-tiff.h"
 #include "openslide-decode-tifflike.h"
@@ -50,7 +48,7 @@ struct level {
 
 static void destroy_level(struct level *l) {
   _openslide_grid_destroy(l->grid);
-  g_slice_free(struct level, l);
+  g_free(l);
 }
 
 typedef struct level level;
@@ -59,7 +57,7 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(level, destroy_level)
 static void destroy(openslide_t *osr) {
   struct generic_tiff_ops_data *data = osr->data;
   _openslide_tiffcache_destroy(data->tc);
-  g_slice_free(struct generic_tiff_ops_data, data);
+  g_free(data);
 
   for (int32_t i = 0; i < osr->level_count; i++) {
     destroy_level((struct level *) osr->levels[i]);
@@ -87,22 +85,22 @@ static bool read_tile(openslide_t *osr,
                                             level, tile_col, tile_row,
                                             &cache_entry);
   if (!tiledata) {
-    g_auto(_openslide_slice) box = _openslide_slice_alloc(tw * th * 4);
+    g_autofree uint32_t *buf = g_malloc(tw * th * 4);
     if (!_openslide_tiff_read_tile(tiffl, tiff,
-                                   box.p, tile_col, tile_row,
+                                   buf, tile_col, tile_row,
                                    err)) {
       return false;
     }
 
     // clip, if necessary
-    if (!_openslide_tiff_clip_tile(tiffl, box.p,
+    if (!_openslide_tiff_clip_tile(tiffl, buf,
                                    tile_col, tile_row,
                                    err)) {
       return false;
     }
 
     // put it in the cache
-    tiledata = _openslide_slice_steal(&box);
+    tiledata = g_steal_pointer(&buf);
     _openslide_cache_put(osr->cache, level, tile_col, tile_row,
                          tiledata, tw * th * 4,
                          &cache_entry);
@@ -139,8 +137,21 @@ static bool paint_region(openslide_t *osr, cairo_t *cr,
                                       err);
 }
 
+static bool read_icc_profile(openslide_t *osr, void *dest, GError **err) {
+  struct level *l = (struct level *) osr->levels[0];
+  struct generic_tiff_ops_data *data = osr->data;
+
+  g_auto(_openslide_cached_tiff) ct = _openslide_tiffcache_get(data->tc, err);
+  if (!ct.tiff) {
+    return false;
+  }
+
+  return _openslide_tiff_read_icc_profile(osr, &l->tiffl, ct.tiff, dest, err);
+}
+
 static const struct _openslide_ops generic_tiff_ops = {
   .paint_region = paint_region,
+  .read_icc_profile = read_icc_profile,
   .destroy = destroy,
 };
 
@@ -224,7 +235,7 @@ static bool generic_tiff_open(openslide_t *osr,
     }
 
     // create level
-    g_autoptr(level) l = g_slice_new0(struct level);
+    g_autoptr(level) l = g_new0(struct level, 1);
     struct _openslide_tiff_level *tiffl = &l->tiffl;
     if (!_openslide_tiff_level_init(ct.tiff,
                                     TIFFCurrentDirectory(ct.tiff),
@@ -255,10 +266,19 @@ static bool generic_tiff_open(openslide_t *osr,
                                                     err)) {
     return false;
   }
+  _openslide_tifflike_set_resolution_props(osr, tl, 0);
+
+  // get icc profile size, if present
+  struct level *base_level = level_array->pdata[0];
+  if (!_openslide_tiff_get_icc_profile_size(&base_level->tiffl,
+                                            ct.tiff,
+                                            &osr->icc_profile_size,
+                                            err)) {
+    return false;
+  }
 
   // allocate private data
-  struct generic_tiff_ops_data *data =
-    g_slice_new0(struct generic_tiff_ops_data);
+  struct generic_tiff_ops_data *data = g_new0(struct generic_tiff_ops_data, 1);
   data->tc = g_steal_pointer(&tc);
 
   // store osr data

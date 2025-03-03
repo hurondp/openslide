@@ -22,8 +22,6 @@
 #ifndef OPENSLIDE_OPENSLIDE_PRIVATE_H_
 #define OPENSLIDE_OPENSLIDE_PRIVATE_H_
 
-#include <config.h>
-
 #include "openslide.h"
 #include "openslide-hash.h"
 
@@ -44,6 +42,9 @@ struct _openslide_associated_image {
 
   int64_t w;
   int64_t h;
+
+  // the size in bytes of the ICC profile, or 0 for no profile available
+  int64_t icc_profile_size;
 };
 
 /* associated image operations */
@@ -52,6 +53,9 @@ struct _openslide_associated_image_ops {
   bool (*get_argb_data)(struct _openslide_associated_image *img,
                         uint32_t *dest,
                         GError **err);
+  // must fail if img->icc_profile_size doesn't match the profile
+  bool (*read_icc_profile)(struct _openslide_associated_image *img,
+                           void *dest, GError **err);
   void (*destroy)(struct _openslide_associated_image *img);
 };
 
@@ -69,6 +73,9 @@ struct _openslide {
   // metadata
   GHashTable *properties; // created automatically
   const char **property_names; // filled in automatically from hashtable
+
+  // the size in bytes of the ICC profile, or 0 for no profile available
+  int64_t icc_profile_size;
 
   // cache
   struct _openslide_cache_binding *cache;
@@ -92,10 +99,12 @@ struct _openslide_level {
 /* the function pointer structure for backends */
 struct _openslide_ops {
   bool (*paint_region)(openslide_t *osr, cairo_t *cr,
-		       int64_t x, int64_t y,
-		       struct _openslide_level *level,
-		       int32_t w, int32_t h,
-		       GError **err);
+                       int64_t x, int64_t y,
+                       struct _openslide_level *level,
+                       int32_t w, int32_t h,
+                       GError **err);
+  // must fail if osr->icc_profile_size doesn't match the profile
+  bool (*read_icc_profile)(openslide_t *osr, void *dest, GError **err);
   void (*destroy)(openslide_t *osr);
 };
 
@@ -128,20 +137,18 @@ struct _openslide_format {
 };
 
 extern const struct _openslide_format _openslide_format_aperio;
+extern const struct _openslide_format _openslide_format_dicom;
 extern const struct _openslide_format _openslide_format_generic_tiff;
 extern const struct _openslide_format _openslide_format_hamamatsu_ndpi;
 extern const struct _openslide_format _openslide_format_hamamatsu_vms_vmu;
+extern const struct _openslide_format _openslide_format_huron;
 extern const struct _openslide_format _openslide_format_leica;
 extern const struct _openslide_format _openslide_format_mirax;
-extern const struct _openslide_format _openslide_format_philips;
+extern const struct _openslide_format _openslide_format_philips_tiff;
 extern const struct _openslide_format _openslide_format_sakura;
 extern const struct _openslide_format _openslide_format_synthetic;
 extern const struct _openslide_format _openslide_format_trestle;
 extern const struct _openslide_format _openslide_format_ventana;
-extern const struct _openslide_format _openslide_format_huron;
-
-/* GHashTable utils */
-void _openslide_int64_free(gpointer data);
 
 /* g_key_file_new() + g_key_file_load_from_file() wrapper */
 GKeyFile *_openslide_read_key_file(const char *filename, int32_t max_size,
@@ -175,22 +182,6 @@ bool _openslide_clip_tile(uint32_t *tiledata,
                           GError **err);
 
 
-// Slice allocator wrapper for g_auto
-struct _openslide_slice {
-  void *p;
-  gsize len;
-};
-
-struct _openslide_slice _openslide_slice_alloc(gsize len);
-
-void *_openslide_slice_steal(struct _openslide_slice *box);
-
-void _openslide_slice_free(struct _openslide_slice *box);
-
-typedef struct _openslide_slice _openslide_slice;
-G_DEFINE_AUTO_CLEANUP_CLEAR_FUNC(_openslide_slice, _openslide_slice_free)
-
-
 // File handling
 struct _openslide_file;
 
@@ -206,6 +197,14 @@ bool _openslide_fexists(const char *path, GError **err);
 typedef struct _openslide_file _openslide_file;
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(_openslide_file, _openslide_fclose)
 
+struct _openslide_dir;
+
+struct _openslide_dir *_openslide_dir_open(const char *dirname, GError **err);
+const char *_openslide_dir_next(struct _openslide_dir *d);
+void _openslide_dir_close(struct _openslide_dir *d);
+
+typedef struct _openslide_dir _openslide_dir;
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(_openslide_dir, _openslide_dir_close)
 
 // Grid helpers
 struct _openslide_grid;
@@ -306,18 +305,18 @@ void _openslide_cache_binding_destroy(struct _openslide_cache_binding *cb);
 
 // put and get
 void _openslide_cache_put(struct _openslide_cache_binding *cb,
-			  void *plane,  // coordinate plane (level or grid)
-			  int64_t x,
-			  int64_t y,
-			  void *data,
-			  uint64_t size_in_bytes,
-			  struct _openslide_cache_entry **entry);
+                          void *plane,  // coordinate plane (level or grid)
+                          int64_t x,
+                          int64_t y,
+                          void *data,
+                          uint64_t size_in_bytes,
+                          struct _openslide_cache_entry **entry);
 
 void *_openslide_cache_get(struct _openslide_cache_binding *cb,
-			   void *plane,
-			   int64_t x,
-			   int64_t y,
-			   struct _openslide_cache_entry **entry);
+                           void *plane,
+                           int64_t x,
+                           int64_t y,
+                           struct _openslide_cache_entry **entry);
 
 // value unref
 void _openslide_cache_entry_unref(struct _openslide_cache_entry *entry);
@@ -346,6 +345,7 @@ enum _openslide_debug_flag {
   OPENSLIDE_DEBUG_DETECTION,
   OPENSLIDE_DEBUG_JPEG_MARKERS,
   OPENSLIDE_DEBUG_PERFORMANCE,
+  OPENSLIDE_DEBUG_SEARCH,
   OPENSLIDE_DEBUG_SQL,
   OPENSLIDE_DEBUG_SYNTHETIC,
   OPENSLIDE_DEBUG_TILES,
@@ -373,6 +373,9 @@ void _openslide_performance_warn_once(gint *warned_flag,
 #define _OPENSLIDE_PROPERTY_NAME_TEMPLATE_REGION_Y "openslide.region[%d].y"
 #define _OPENSLIDE_PROPERTY_NAME_TEMPLATE_REGION_WIDTH "openslide.region[%d].width"
 #define _OPENSLIDE_PROPERTY_NAME_TEMPLATE_REGION_HEIGHT "openslide.region[%d].height"
+#define _OPENSLIDE_PROPERTY_NAME_TEMPLATE_ASSOCIATED_WIDTH "openslide.associated.%s.width"
+#define _OPENSLIDE_PROPERTY_NAME_TEMPLATE_ASSOCIATED_HEIGHT "openslide.associated.%s.height"
+#define _OPENSLIDE_PROPERTY_NAME_TEMPLATE_ASSOCIATED_ICC_SIZE "openslide.associated.%s.icc-size"
 
 /* Tables */
 // YCbCr -> RGB chroma contributions
@@ -380,19 +383,6 @@ extern const int16_t _openslide_R_Cr[256];
 extern const int32_t _openslide_G_Cb[256];
 extern const int32_t _openslide_G_Cr[256];
 extern const int16_t _openslide_B_Cb[256];
-
-// deprecated prefetch stuff (maybe we'll undeprecate it someday),
-// still needs these declarations for ABI compat
-// TODO: remove if soname bump
-#undef openslide_give_prefetch_hint
-OPENSLIDE_PUBLIC()
-int openslide_give_prefetch_hint(openslide_t *osr,
-				 int64_t x, int64_t y,
-				 int32_t level,
-				 int64_t w, int64_t h);
-#undef openslide_cancel_prefetch_hint
-OPENSLIDE_PUBLIC()
-void openslide_cancel_prefetch_hint(openslide_t *osr, int prefetch_id);
 
 /* Prevent use of dangerous functions and functions with mandatory wrappers.
    Every @p replacement must be unique to avoid conflicting-type errors. */
@@ -419,6 +409,11 @@ void openslide_cancel_prefetch_hint(openslide_t *osr, int prefetch_id);
 #undef ftello
 #define fseeko _OPENSLIDE_POISON(_openslide_fseek_)
 #define ftello _OPENSLIDE_POISON(_openslide_ftell_)
+#endif
+
+#ifdef _WIN32
+// Prevent windows.h from defining the IN/OUT macro
+#define _NO_W32_PSEUDO_MODIFIERS
 #endif
 
 #endif
