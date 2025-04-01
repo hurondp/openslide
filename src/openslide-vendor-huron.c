@@ -1,4 +1,26 @@
 /*
+ *  OpenSlide, a library for reading whole slide image files
+ *
+ *  Copyright (c) 2007-2013 Carnegie Mellon University
+ *  Copyright (c) 2011 Google, Inc.
+ *  All rights reserved.
+ *
+ *  OpenSlide is free software: you can redistribute it and/or modify
+ *  it under the terms of the GNU Lesser General Public License as
+ *  published by the Free Software Foundation, version 2.1.
+ *
+ *  OpenSlide is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ *  GNU Lesser General Public License for more details.
+ *
+ *  You should have received a copy of the GNU Lesser General Public
+ *  License along with OpenSlide. If not, see
+ *  <http://www.gnu.org/licenses/>.
+ *
+ */
+
+/*
  * Huron (tif) support
  *
  * quickhash comes from _openslide_tifflike_init_properties_and_hash
@@ -39,7 +61,7 @@ static void destroy_level(struct level *l) {
     g_hash_table_destroy(l->missing_tiles);
   }
   _openslide_grid_destroy(l->grid);
-  g_slice_free(struct level, l);
+  g_free(l);
 }
 
 static void destroy(openslide_t *osr) {
@@ -50,7 +72,7 @@ static void destroy(openslide_t *osr) {
 
   struct huron_ops_data *data = osr->data;
   _openslide_tiffcache_destroy(data->tc);
-  g_slice_free(struct huron_ops_data, data);
+  g_free(data);
 }
 
 static bool render_missing_tile(struct level *l,
@@ -147,11 +169,11 @@ static bool decode_tile(struct level *l,
 }
 
 static bool read_tile(openslide_t *osr,
-          cairo_t *cr,
-          struct _openslide_level *level,
-          int64_t tile_col, int64_t tile_row,
-          void *arg,
-          GError **err) {
+		      cairo_t *cr,
+		      struct _openslide_level *level,
+		      int64_t tile_col, int64_t tile_row,
+		      void *arg,
+		      GError **err) {
   struct level *l = (struct level *) level;
   struct _openslide_tiff_level *tiffl = &l->tiffl;
   TIFF *tiff = arg;
@@ -166,23 +188,23 @@ static bool read_tile(openslide_t *osr,
                                             level, tile_col, tile_row,
                                             &cache_entry);
   if (!tiledata) {
-    g_auto(_openslide_slice) box = _openslide_slice_alloc(tw * th * 4);
-    if (!decode_tile(l, tiff, box.p, tile_col, tile_row, err)) {
+    g_autofree uint32_t *buf = g_malloc(tw * th * 4);
+    if (!decode_tile(l, tiff, buf, tile_col, tile_row, err)) {
       return false;
     }
 
     // clip, if necessary
-    if (!_openslide_tiff_clip_tile(tiffl, box.p,
+    if (!_openslide_tiff_clip_tile(tiffl, buf,
                                    tile_col, tile_row,
                                    err)) {
       return false;
     }
 
     // put it in the cache
-    tiledata = _openslide_slice_steal(&box);
+    tiledata = g_steal_pointer(&buf);
     _openslide_cache_put(osr->cache, level, tile_col, tile_row,
-       tiledata, tw * th * 4,
-       &cache_entry);
+			 tiledata, tw * th * 4,
+			 &cache_entry);
   }
 
   // draw it
@@ -197,10 +219,10 @@ static bool read_tile(openslide_t *osr,
 }
 
 static bool paint_region(openslide_t *osr, cairo_t *cr,
-       int64_t x, int64_t y,
-       struct _openslide_level *level,
-       int32_t w, int32_t h,
-       GError **err) {
+			 int64_t x, int64_t y,
+			 struct _openslide_level *level,
+			 int32_t w, int32_t h,
+			 GError **err) {
   struct huron_ops_data *data = osr->data;
   struct level *l = (struct level *) level;
 
@@ -257,17 +279,22 @@ static void add_properties(openslide_t *osr, char **props) {
   if (*props == NULL) {
     return;
   }
-  // Used to determine the AppMag of the image, dependng on
-  // the Resolution property
-  // definitely not the most efficient way.
+  // Huron scanners normally set a huron.AppMag metadata field;
+  // however, some older scanners do not.
+  // If the AppMag property is missing, either use Resolution
+  // field or calculate from TIFF resolution metadata;
+  // use table to determine the corresponding AppMag.
   GHashTable * res = g_hash_table_new(g_str_hash, g_str_equal);
-  g_hash_table_insert(res, "0.20", "40");
+  g_hash_table_insert(res, "0.20", "50");
   g_hash_table_insert(res, "0.25", "40");
-  g_hash_table_insert(res, "0.40", "20");
+  g_hash_table_insert(res, "0.40", "25");
   g_hash_table_insert(res, "0.50", "20");
-  g_hash_table_insert(res, "0.80", "10");
+  g_hash_table_insert(res, "0.80", "12.5");
   g_hash_table_insert(res, "1.00", "10");
   g_hash_table_insert(res, "1", "10");
+  g_hash_table_insert(res, "1.25", "8");
+  g_hash_table_insert(res, "2.00", "5");
+  g_hash_table_insert(res, "2.25", "4");
 
   // don't ignore first property in Huron
   for (char **p = props; *p != NULL; ++p) {
@@ -284,7 +311,7 @@ static void add_properties(openslide_t *osr, char **props) {
 
         if (g_str_equal(name, "Resolution") ) {
 
-          // remove th 'um' part of the value
+          // remove the 'um' part of the value
           char ** val_stripped = g_strsplit(value, " ", 2);
           char * val = g_strstrip(val_stripped[0]);
           // set the mpp
@@ -294,7 +321,6 @@ static void add_properties(openslide_t *osr, char **props) {
 
           // use the hash table, res, to determine the AppMag
           char *new_value = g_hash_table_lookup(res, val );
-
 
           if (new_value != NULL) {
             // set the AppMag value
@@ -347,7 +373,7 @@ static bool add_associated_image(openslide_t *osr,
 
       g_auto(GStrv) names = g_strsplit(line, " ", -1);
       if (names && names[0]) {
-  name = g_strdup(names[0]);
+	name = g_strdup(names[0]);
       }
     }
   }
@@ -399,8 +425,7 @@ static bool huron_open(openslide_t *osr,
   }
 
   /*
-   *
-   * The first image in an Huron BigTiff file is always the baseline image (full
+   * The first image in a Huron BigTiff file is always the baseline image (full
    * resolution). This image is always tiled, usually with a tile size
    * of 256 x 256 pixels. The second image is always a thumbnail,
    * typically with dimensions of about 1024 x 768 pixels. Unlike the
@@ -411,7 +436,7 @@ static bool huron_open(openslide_t *osr,
    * tiled organization with the same tile size.
    *
    * Optionally at the end of the file there may be a slide label
-   * image, which is a low resolution picture taken of the slide’s
+   * image, which is a low resolution picture taken of the slideâ€™s
    * label, and/or a macro camera image, which is a low resolution
    * picture taken of the entire slide. The label and macro images are
    * always stripped.
@@ -449,7 +474,7 @@ static bool huron_open(openslide_t *osr,
     // for huron, the tiled directories are the ones we want
     if (TIFFIsTiled(ct.tiff)) {
       //g_debug("tiled directory: %d", dir);
-      struct level *l = g_slice_new0(struct level);
+      struct level *l = g_new0(struct level, 1);
       struct _openslide_tiff_level *tiffl = &l->tiffl;
       if (level_array->len) {
         l->prev = level_array->pdata[level_array->len - 1];
@@ -500,7 +525,7 @@ static bool huron_open(openslide_t *osr,
       // associated image
       const char *name = (dir == 1) ? "thumbnail" : NULL;
       if (!add_associated_image(osr, name, tc, ct.tiff, err)) {
-  return false;
+	return false;
       }
       //g_debug("associated image: %d", dir);
     }
@@ -537,7 +562,7 @@ static bool huron_open(openslide_t *osr,
   }
 
   // allocate private data
-  struct huron_ops_data *data = g_slice_new0(struct huron_ops_data);
+  struct huron_ops_data *data = g_new0(struct huron_ops_data, 1);
   data->tc = g_steal_pointer(&tc);
 
   // store osr data
