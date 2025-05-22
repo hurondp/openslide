@@ -384,7 +384,7 @@ static bool add_associated_image(openslide_t *osr,
 
   return _openslide_tiff_add_associated_image(osr, name, tc,
                                               TIFFCurrentDirectory(tiff),
-                                              err);
+                                              NULL, err);
 }
 
 static void propagate_missing_tile(void *key, void *value G_GNUC_UNUSED,
@@ -425,15 +425,13 @@ static bool huron_open(openslide_t *osr,
   }
 
   /*
-   * The first image in a Huron BigTiff file is always the baseline image (full
-   * resolution). This image is always tiled, usually with a tile size
-   * of 256 x 256 pixels. The second image is always a thumbnail,
-   * typically with dimensions of about 1024 x 768 pixels. Unlike the
-   * other slide images, the thumbnail image is always
-   * stripped. Following the thumbnail there may be one or more
-   * intermediate "pyramid" images. These are always compressed with
-   * the same type of compression as the baseline image, and have a
-   * tiled organization with the same tile size.
+   * The first image in a Huron BigTiff file is always the baseline image 
+   * (base layer/full resolution). This image is always tiled, usually with 
+   * a tile size of 512 x 512 pixels. The last or second to last pyramid
+   * layer is used as the thumbnail, for which the dimensions vary. 
+   * The pyramid layer images are always compressed with the same type of
+   * compression as the base layer image, and have a tiled organization 
+   * with the same tile size.
    *
    * Optionally at the end of the file there may be a slide label
    * image, which is a low resolution picture taken of the slide’s
