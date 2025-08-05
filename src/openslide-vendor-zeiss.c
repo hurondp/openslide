@@ -292,6 +292,7 @@ static void destroy_level(struct level *l) {
   _openslide_grid_destroy(l->grid);
   g_free(l);
 }
+OPENSLIDE_DEFINE_G_DESTROY_NOTIFY_WRAPPER(destroy_level)
 
 static void destroy_czi(struct czi *czi) {
   g_free(czi->subblks);
@@ -314,7 +315,7 @@ static void destroy(openslide_t *osr) {
   }
 }
 
-static bool freadn_to_buf(struct _openslide_file *f, off_t offset,
+static bool freadn_to_buf(struct _openslide_file *f, int64_t offset,
                           void *buf, size_t len, GError **err) {
   if (!_openslide_fseek(f, offset, SEEK_SET, err)) {
     g_prefix_error(err, "Couldn't seek to offset %"PRId64": ", offset);
@@ -1188,7 +1189,8 @@ static GPtrArray *create_levels(openslide_t *osr, struct czi *czi,
                                 GError **err) {
   // walk subblocks, create a level struct for each valid downsample
   g_autoptr(GPtrArray) levels =
-    g_ptr_array_new_full(10, (GDestroyNotify) destroy_level);
+    g_ptr_array_new_full(10,
+                         OPENSLIDE_G_DESTROY_NOTIFY_WRAPPER(destroy_level));
   g_autoptr(GHashTable) level_hash =
     g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
   for (int i = 0; i < czi->nsubblk; i++) {

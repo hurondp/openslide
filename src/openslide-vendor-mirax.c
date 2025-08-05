@@ -29,7 +29,7 @@
  */
 
 #include "openslide-private.h"
-#include "openslide-decode-gdkpixbuf.h"
+#include "openslide-decode-bmp.h"
 #include "openslide-decode-jpeg.h"
 #include "openslide-decode-png.h"
 
@@ -38,8 +38,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
-
-#include "openslide-hash.h"
 
 static const char MRXS_EXT[] = ".mrxs";
 static const char SLIDEDAT_INI[] = "Slidedat.ini";
@@ -171,7 +169,6 @@ struct slide_zoom_level_params {
 struct image {
   int32_t fileno;
   int32_t start_in_file;
-  int32_t length;
   int32_t imageno;   // used only for cache lookup
   int refcount;
 };
@@ -209,11 +206,11 @@ static void image_unref(struct image *image) {
 typedef struct image image;
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(image, image_unref)
 
-static void tile_free(gpointer data) {
-  struct tile *tile = data;
+static void tile_free(struct tile *tile) {
   image_unref(tile->image);
   g_free(tile);
 }
+OPENSLIDE_DEFINE_G_DESTROY_NOTIFY_WRAPPER(tile_free)
 
 static uint32_t *read_image(openslide_t *osr,
                             struct image *image,
@@ -225,25 +222,30 @@ static uint32_t *read_image(openslide_t *osr,
 
   g_autofree uint32_t *dest = g_malloc(w * h * 4);
 
+  g_autoptr(_openslide_file) f =
+    _openslide_fopen(data->datafile_paths[image->fileno], err);
+  if (!f) {
+    return NULL;
+  }
+
   switch (format) {
   case FORMAT_JPEG:
-    result = _openslide_jpeg_read(data->datafile_paths[image->fileno],
-                                  image->start_in_file,
-                                  dest, w, h,
-                                  err);
-    break;
-  case FORMAT_PNG:
-    result = _openslide_png_read(data->datafile_paths[image->fileno],
-                                 image->start_in_file,
-                                 dest, w, h,
-                                 err);
-    break;
-  case FORMAT_BMP:
-    result = _openslide_gdkpixbuf_read("bmp",
-                                       data->datafile_paths[image->fileno],
-                                       image->start_in_file, image->length,
+    result = _openslide_jpeg_read_file(f,
+                                       image->start_in_file,
                                        dest, w, h,
                                        err);
+    break;
+  case FORMAT_PNG:
+    result = _openslide_png_read_file(f,
+                                      image->start_in_file,
+                                      dest, w, h,
+                                      err);
+    break;
+  case FORMAT_BMP:
+    result = _openslide_bmp_read_file(f,
+                                      image->start_in_file,
+                                      dest, w, h,
+                                      err);
     break;
   default:
     g_assert_not_reached();
@@ -344,6 +346,7 @@ static void destroy_level(struct level *l) {
   _openslide_grid_destroy(l->grid);
   g_free(l);
 }
+OPENSLIDE_DEFINE_G_DESTROY_NOTIFY_WRAPPER(destroy_level)
 
 static void destroy(openslide_t *osr) {
   struct mirax_ops_data *data = osr->data;
@@ -829,7 +832,6 @@ static bool process_hier_data_pages_from_indexfile(struct _openslide_file *f,
 	g_autoptr(image) image = g_new0(struct image, 1);
 	image->fileno = fileno;
 	image->start_in_file = offset;
-	image->length = length;
 	image->imageno = image_number++;
 	image->refcount = 1;
 
@@ -1676,7 +1678,7 @@ static bool mirax_open(openslide_t *osr, const char *filename,
 
   // set up level dimensions and such
   g_autoptr(GPtrArray) level_array =
-    g_ptr_array_new_with_free_func((GDestroyNotify) destroy_level);
+    g_ptr_array_new_with_free_func(OPENSLIDE_G_DESTROY_NOTIFY_WRAPPER(destroy_level));
   g_autofree struct slide_zoom_level_params *slide_zoom_level_params =
     g_new(struct slide_zoom_level_params, zoom_levels);
   int total_concat_exponent = 0;
@@ -1775,7 +1777,8 @@ static bool mirax_open(openslide_t *osr, const char *filename,
     l->grid = _openslide_grid_create_tilemap(osr,
                                              lp->tile_advance_x,
                                              lp->tile_advance_y,
-                                             read_tile, tile_free);
+                                             read_tile,
+                                             OPENSLIDE_G_DESTROY_NOTIFY_WRAPPER(tile_free));
 
     //g_debug("level %d tile advance %.10g %.10g, dim %"PRId64" %"PRId64", image size %d %d, tile %g %g, image_concat %d, tile_count_divisor %d, positions_per_tile %d", i, lp->tile_advance_x, lp->tile_advance_y, l->base.w, l->base.h, l->image_width, l->image_height, l->tile_w, l->tile_h, lp->image_concat, lp->tile_count_divisor, lp->positions_per_tile);
   }

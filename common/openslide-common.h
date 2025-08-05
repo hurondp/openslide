@@ -19,16 +19,14 @@
  *
  */
 
-#ifndef OPENSLIDE_COMMON_H
-#define OPENSLIDE_COMMON_H
+#pragma once
 
 #include <stdbool.h>
+#include <stdio.h>
 #include <glib.h>
 #include <openslide.h>
 
-#ifdef OPENSLIDE_PUBLIC
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(openslide_t, openslide_close)
-#endif
 
 // cmdline
 
@@ -52,4 +50,6 @@ void common_fail_on_error(openslide_t *osr, const char *fmt, ...);
 GHashTable *common_get_open_fds(void);
 bool common_check_open_fds(GHashTable *ignore, const char *msg);
 
-#endif
+// file
+
+FILE *common_fopen(const char *path, const char *mode, GError **err);

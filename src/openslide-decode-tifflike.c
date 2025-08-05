@@ -99,12 +99,13 @@ static uint64_t read_uint(struct _openslide_file *f, int32_t size,
                           bool big_endian, bool *ok) {
   g_assert(ok != NULL);
 
-  uint8_t buf[size];
+  uint8_t buf[8];
+  g_assert(size <= (int32_t) sizeof(buf));
   if (!_openslide_fread_exact(f, buf, size, NULL)) {
     *ok = false;
     return 0;
   }
-  fix_byte_order(buf, sizeof(buf), 1, big_endian);
+  fix_byte_order(buf, size, 1, big_endian);
   switch (size) {
   case 1: {
     uint8_t result;
@@ -377,15 +378,14 @@ static void tiff_directory_destroy(struct tiff_directory *d) {
 typedef struct tiff_directory tiff_directory;
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(tiff_directory, tiff_directory_destroy)
 
-static void tiff_item_destroy(gpointer data) {
-  struct tiff_item *item = data;
-
+static void tiff_item_destroy(struct tiff_item *item) {
   g_free(item->uints);
   g_free(item->sints);
   g_free(item->floats);
   g_free(item->buffer);
   g_free(item);
 }
+OPENSLIDE_DEFINE_G_DESTROY_NOTIFY_WRAPPER(tiff_item_destroy)
 
 static struct tiff_directory *read_directory(struct _openslide_file *f,
                                              uint64_t *diroff,
@@ -437,7 +437,8 @@ static struct tiff_directory *read_directory(struct _openslide_file *f,
   // initial checks passed, initialize the directory
   g_autoptr(tiff_directory) d = g_new0(struct tiff_directory, 1);
   d->items = g_hash_table_new_full(g_direct_hash, g_direct_equal,
-                                   NULL, tiff_item_destroy);
+                                   NULL,
+                                   OPENSLIDE_G_DESTROY_NOTIFY_WRAPPER(tiff_item_destroy));
   d->offset = off;
 
   // read all directory entries
@@ -468,8 +469,9 @@ static struct tiff_directory *read_directory(struct _openslide_file *f,
       return NULL;
     }
 
-    // check for overflow
-    if (count > SSIZE_MAX / value_size) {
+    // compute total size
+    size_t value_len;
+    if (!g_size_checked_mul(&value_len, value_size, count)) {
       g_set_error(err, OPENSLIDE_ERROR, OPENSLIDE_ERROR_FAILED,
                   "Value count too large");
       return NULL;
@@ -483,7 +485,7 @@ static struct tiff_directory *read_directory(struct _openslide_file *f,
     }
 
     // does value/offset contain the value?
-    if (value_size * count <= sizeof(value)) {
+    if (value_len <= sizeof(value)) {
       // yes
       fix_byte_order(value, value_size, count, big_endian);
       if (!set_item_values(item, value, err)) {

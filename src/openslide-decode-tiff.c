@@ -36,8 +36,6 @@
 #include <math.h>
 #include <cairo.h>
 
-#include "openslide-hash.h"
-
 #define HANDLE_CACHE_MAX 32
 
 struct _openslide_tiffcache {
@@ -227,7 +225,7 @@ static bool decode_jpeg(const void *buf, uint32_t buflen,
 
     // load JPEG tables
     if (tables) {
-      _openslide_jpeg_mem_src(cinfo, tables, tables_len);
+      jpeg_mem_src(cinfo, tables, tables_len);
       if (jpeg_read_header(cinfo, false) != JPEG_HEADER_TABLES_ONLY) {
         g_set_error(err, OPENSLIDE_ERROR, OPENSLIDE_ERROR_FAILED,
                     "Couldn't load JPEG tables");
@@ -236,7 +234,7 @@ static bool decode_jpeg(const void *buf, uint32_t buflen,
     }
 
     // set up I/O
-    _openslide_jpeg_mem_src(cinfo, buf, buflen);
+    jpeg_mem_src(cinfo, buf, buflen);
 
     // read header
     if (jpeg_read_header(cinfo, true) != JPEG_HEADER_OK) {

@@ -8,8 +8,8 @@ project(
     'c_std=gnu99',
     'warning_level=2',
   ],
-  # limited by Ubuntu 20.04
-  meson_version : '>=0.53',
+  # limited by Debian 11 at 0.56
+  meson_version : '>=0.54',
 )
 # Shared library version.  Follow SemVer rules.
 soversion = '1.0.0'
@@ -75,10 +75,28 @@ add_project_arguments(
   '-DGLIB_VERSION_MAX_ALLOWED=GLIB_VERSION_MIN_REQUIRED',
   language : 'c',
 )
+if host_machine.system() == 'windows'
+  # Windows likes to warn about C and POSIX functions
+  foreach native : [false, true]
+    add_project_arguments(
+      '-D_CRT_NONSTDC_NO_DEPRECATE',
+      '-D_CRT_SECURE_NO_WARNINGS',
+      language : 'c',
+      native : native,
+    )
+  endforeach
+endif
 add_project_link_arguments(
   cc.get_supported_link_arguments('-Wl,--no-undefined'),
   language : 'c',
 )
+
+# Functions
+foreach f : ['fseeko', 'ftello']
+  if cc.has_function(f)
+    conf.set('HAVE_' + f.to_upper(), 1)
+  endif
+endforeach
 
 # fopen cloexec flag
 if host_machine.system() in [
@@ -140,21 +158,25 @@ cairo_dep = dependency(
   'cairo',
   version : '>=1.2',
 )
-gdk_pixbuf_dep = dependency(
-  'gdk-pixbuf-2.0',
-  version : '>=2.14',
-)
 xml_dep = dependency('libxml-2.0')
 sqlite_dep = dependency(
   'sqlite3',
   version : '>=3.14',
+  required : host_machine.system() != 'windows',
 )
+if not sqlite_dep.found()
+  # SQLite's Makefile.msc (for Windows) doesn't install the pkg-config file
+  sqlite_dep = declare_dependency(
+    dependencies : cc.find_library('sqlite3'),
+    compile_args : '-DSQLITE_API=__declspec(dllimport)',
+  )
+endif
 dicom_dep = dependency(
   'libdicom',
   # avoid 'check' dependency
   default_options : ['tests=false'],
   fallback : ['libdicom', 'libdicom_dep'],
-  version : '>=1.0.0',
+  version : '>=1.2.0',
 )
 valgrind_dep = dependency(
   'valgrind',
@@ -168,6 +190,13 @@ doxygen = find_program(
 )
 
 # Dependency checks
+if jpeg_dep.type_name() != 'internal' and not cc.has_function(
+  'jpeg_mem_src',
+  dependencies : jpeg_dep,
+)
+  error('libjpeg-turbo >= 1.3 or libjpeg >= 9c is required')
+endif
+
 if tiff_dep.type_name() == 'internal' or cc.has_function(
   'TIFFOpenOptionsSetErrorHandlerExtR',
   dependencies : tiff_dep,

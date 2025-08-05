@@ -52,8 +52,6 @@
 #include <tiff.h>
 #include <cairo.h>
 
-#include "openslide-hash.h"
-
 #define NGR_TILE_HEIGHT 64
 
 // VMS/VMU
@@ -268,7 +266,7 @@ static bool jpeg_random_access_src(j_decompress_ptr cinfo,
   }
 
   // pass the buffer off to mem_src
-  _openslide_jpeg_mem_src(cinfo, buffer, buffer_size);
+  jpeg_mem_src(cinfo, buffer, buffer_size);
 
   return true;
 }
@@ -282,6 +280,7 @@ static void jpeg_level_free(struct jpeg_level *l) {
   _openslide_grid_destroy(l->grid);
   g_free(l);
 }
+OPENSLIDE_DEFINE_G_DESTROY_NOTIFY_WRAPPER(jpeg_level_free)
 
 static void jpeg_free(struct jpeg *jpeg) {
   g_free(jpeg->filename);
@@ -289,12 +288,14 @@ static void jpeg_free(struct jpeg *jpeg) {
   g_free(jpeg->unreliable_mcu_starts);
   g_free(jpeg);
 }
+OPENSLIDE_DEFINE_G_DESTROY_NOTIFY_WRAPPER(jpeg_free)
 
 static struct jpeg_setup *jpeg_setup_new(void) {
   struct jpeg_setup *setup = g_new0(struct jpeg_setup, 1);
   setup->levels =
-    g_ptr_array_new_with_free_func((GDestroyNotify) jpeg_level_free);
-  setup->jpegs = g_ptr_array_new_with_free_func((GDestroyNotify) jpeg_free);
+    g_ptr_array_new_with_free_func(OPENSLIDE_G_DESTROY_NOTIFY_WRAPPER(jpeg_level_free));
+  setup->jpegs =
+    g_ptr_array_new_with_free_func(OPENSLIDE_G_DESTROY_NOTIFY_WRAPPER(jpeg_free));
   return setup;
 }
 
@@ -1184,7 +1185,7 @@ static void create_scaled_jpeg_levels(openslide_t *osr,
                                       GPtrArray *levels) {
   g_autoptr(GHashTable) expanded_levels =
     g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free,
-                          (GDestroyNotify) jpeg_level_free);
+                          OPENSLIDE_G_DESTROY_NOTIFY_WRAPPER(jpeg_level_free));
 
   for (guint i = 0; i < levels->len; i++) {
     struct jpeg_level *l = g_steal_pointer(&levels->pdata[i]);
@@ -1522,6 +1523,7 @@ static void ngr_level_free(struct ngr_level *l) {
   _openslide_grid_destroy(l->grid);
   g_free(l);
 }
+OPENSLIDE_DEFINE_G_DESTROY_NOTIFY_WRAPPER(ngr_level_free)
 
 static void ngr_destroy(openslide_t *osr) {
   for (int i = 0; i < osr->level_count; i++) {
@@ -1636,7 +1638,7 @@ static bool hamamatsu_vmu_part2(openslide_t *osr,
 				GError **err) {
   // initialize individual ngr structs
   g_autoptr(GPtrArray) level_array =
-    g_ptr_array_new_with_free_func((GDestroyNotify) ngr_level_free);
+    g_ptr_array_new_with_free_func(OPENSLIDE_G_DESTROY_NOTIFY_WRAPPER(ngr_level_free));
 
   // open files
   for (int i = 0; i < num_levels; i++) {

@@ -43,19 +43,17 @@ jobs:
         dnf install -y \
             gcc git-core meson pkg-config \
             python3-requests python3-pyyaml \
-            diffutils \
-            zlib-devel \
-            libzstd-devel \
-            libpng-devel \
-            libjpeg-turbo-devel \
-            libtiff-devel \
-            openjpeg2-devel \
-            gdk-pixbuf2-modules-extra gdk-pixbuf2-devel \
-            libdicom-devel \
-            libxml2-devel \
-            sqlite-devel \
             cairo-devel \
             glib2-devel \
+            libdicom-devel \
+            libjpeg-turbo-devel \
+            libpng-devel \
+            libtiff-devel \
+            libxml2-devel \
+            libzstd-devel \
+            openjpeg2-devel \
+            sqlite-devel \
+            zlib-devel \
             xdelta libjpeg-turbo-utils \
             clang doxygen llvm dnf-plugins-core
         dnf debuginfo-install -y cairo fontconfig glib2
@@ -63,7 +61,9 @@ jobs:
       uses: actions/checkout@v4
     - name: Build
       run: |
-        if ! meson setup builddir --werror; then
+        # disable werror for libdicom 1.2.0
+        # https://github.com/ImagingDataCommons/libdicom/pull/100
+        if ! meson setup builddir --fatal-meson-warnings --werror -Dlibdicom:werror=false; then
             cat builddir/meson-logs/meson-log.txt
             exit 1
         fi
@@ -133,6 +133,8 @@ jobs:
           - os: ubuntu-latest
             container: quay.io/centos/centos:stream9
           - os: ubuntu-latest
+            container: quay.io/centos/centos:stream10
+          - os: ubuntu-latest
             container: debian:11
             ignore-cloexec-leaks: ignore CLOEXEC leaks
           - os: ubuntu-latest
@@ -142,9 +144,6 @@ jobs:
             arch: i386
           - os: ubuntu-24.04-arm
             container: debian:12
-          - os: ubuntu-latest
-            container: ubuntu:20.04
-            ignore-cloexec-leaks: ignore CLOEXEC leaks
           - os: ubuntu-22.04
           - os: ubuntu-24.04
           - os: macos-latest
@@ -162,20 +161,19 @@ jobs:
                 brew link --overwrite $formula
             done
             brew update
-            brew install \
+            brew install --quiet \
                 meson pkg-config \
-                zlib \
-                zstd \
-                libpng \
-                jpeg-turbo \
-                libtiff \
-                openjpeg \
-                gdk-pixbuf \
-                libdicom \
-                libxml2 \
-                sqlite \
                 cairo \
                 glib \
+                jpeg-turbo \
+                libdicom \
+                libpng \
+                libtiff \
+                libxml2 \
+                openjpeg \
+                sqlite \
+                zlib \
+                zstd \
                 xdelta
             # Install Python packages that Homebrew does not wish to maintain.
             # Use --break-system-packages so pip doesn't refuse to install
@@ -194,14 +192,18 @@ jobs:
                     dnf install -y 'dnf-command(config-manager)'
                     dnf config-manager --set-enabled powertools
                     dnf install -y epel-release
-                    pyver=38
-                    pydotver=3.8
-                    python=python38
+                    pyver=39
+                    pydotver=3.9
+                    python=python39
                     ;;
                 9)
                     dnf install -y 'dnf-command(config-manager)'
                     dnf config-manager --set-enabled crb
                     dnf install -y epel-release epel-next-release
+                    ;;
+                10)
+                    dnf config-manager --set-enabled crb
+                    dnf install -y epel-release
                     ;;
                 esac
 
@@ -210,19 +212,17 @@ jobs:
                 dnf install -y \
                     gcc git-core meson pkg-config \
                     $python python${pyver}-requests python${pyver}-pyyaml \
-                    diffutils \
-                    zlib-devel \
-                    libzstd-devel \
-                    libpng-devel \
-                    libjpeg-turbo-devel \
-                    libtiff-devel \
-                    openjpeg2-devel \
-                    gdk-pixbuf2-modules gdk-pixbuf2-devel \
-                    libdicom-devel \
-                    libxml2-devel \
-                    sqlite-devel \
                     cairo-devel \
                     glib2-devel \
+                    libdicom-devel \
+                    libjpeg-turbo-devel \
+                    libpng-devel \
+                    libtiff-devel \
+                    libxml2-devel \
+                    libzstd-devel \
+                    openjpeg2-devel \
+                    sqlite-devel \
+                    zlib-devel \
                     xdelta libjpeg-turbo-utils \
                     zstd
 
@@ -253,17 +253,16 @@ jobs:
                 DEBIAN_FRONTEND=noninteractive $sudo apt-get -y install \
                     gcc git meson pkg-config \
                     python3-requests python3-yaml \
-                    zlib1g-dev$arch \
-                    libzstd-dev$arch \
-                    libpng-dev$arch \
-                    $jpeg$arch \
-                    libtiff-dev$arch \
-                    libopenjp2-7-dev$arch \
-                    libgdk-pixbuf2.0-dev$arch \
-                    libxml2-dev$arch \
-                    libsqlite3-dev$arch \
                     libcairo2-dev$arch \
                     libglib2.0-dev$arch \
+                    $jpeg$arch \
+                    libopenjp2-7-dev$arch \
+                    libpng-dev$arch \
+                    libsqlite3-dev$arch \
+                    libtiff-dev$arch \
+                    libxml2-dev$arch \
+                    libzstd-dev$arch \
+                    zlib1g-dev$arch \
                     xdelta3 libjpeg-turbo-progs $extra \
                     zstd
                 ;;
@@ -330,8 +329,51 @@ jobs:
       if: matrix.sanitize
       run: cd builddir/test && ./driver sanitize
 
-  windows_setup:
-    name: Set up Windows build
+  windows-build:
+    name: Build
+    needs: primary
+    runs-on: windows-2025
+    strategy:
+      matrix:
+        platform: [Windows]  # cosmetic
+        toolchain: [MinGW, clang-cl]
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+      # for vcpkg caching
+      packages: write
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.13
+      - name: Install dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          scripts/vcpkg-install.sh
+          pip install meson requests PyYAML
+      - name: Build
+        env:
+          CC: ${{ matrix.toolchain == 'clang-cl' && 'clang-cl' || 'gcc' }}
+          WINDRES: ${{ matrix.toolchain == 'clang-cl' && 'llvm-rc' || 'windres' }}
+        run: |
+          if ! meson setup builddir --fatal-meson-warnings --werror; then
+              cat builddir/meson-logs/meson-log.txt
+              exit 1
+          fi
+          ninja -C builddir
+      - name: Check
+        run: |
+          trap "cat builddir/meson-logs/testlog.txt" EXIT
+          meson test -C builddir
+
+  bin-setup:
+    name: Set up openslide-bin build
     runs-on: ubuntu-latest
     outputs:
       suffix: ${{ steps.params.outputs.suffix }}
@@ -359,21 +401,21 @@ jobs:
               exit 1
           esac
 
-  windows_build:
-    name: Windows build
-    needs: windows_setup
+  bin-build:
+    name: Build (openslide-bin)
+    needs: bin-setup
     uses: openslide/openslide-bin/.github/workflows/build.yml@main
     with:
       openslide_repo: ${{ github.repository }}
       openslide_ref: ${{ github.ref }}
-      suffix: ${{ needs.windows_setup.outputs.suffix }}
+      suffix: ${{ needs.bin-setup.outputs.suffix }}
       werror: true
-      windows_builder_repo_and_digest: ${{ needs.windows_setup.outputs.windows_builder_repo_and_digest }}
+      windows_builder_repo_and_digest: ${{ needs.bin-setup.outputs.windows_builder_repo_and_digest }}
 
   release:
     name: Release
     if: github.ref_type == 'tag'
-    needs: [primary, build, windows_build]
+    needs: [primary, build, windows-build, bin-build]
     runs-on: ubuntu-latest
     concurrency: release-${{ github.ref }}
     permissions:

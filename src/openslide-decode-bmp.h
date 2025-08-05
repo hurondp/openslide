@@ -1,7 +1,7 @@
 /*
  *  OpenSlide, a library for reading whole slide image files
  *
- *  Copyright (c) 2007-2013 Carnegie Mellon University
+ *  Copyright (c) 2025 Benjamin Gilbert
  *  All rights reserved.
  *
  *  OpenSlide is free software: you can redistribute it and/or modify
@@ -21,6 +21,19 @@
 
 #pragma once
 
-/* Private error functions: for use only by external API */
+#include "openslide-private.h"
 
-void _openslide_propagate_error(openslide_t *osr, GError *err);
+#include <stdint.h>
+#include <glib.h>
+
+bool _openslide_bmp_read_file(struct _openslide_file *f,
+                              int64_t offset,
+                              uint32_t *dest,
+                              int32_t w, int32_t h,
+                              GError **err);
+
+bool _openslide_bmp_decode_buffer(const void *buf,
+                                  int64_t length,
+                                  uint32_t *dest,
+                                  int32_t w, int32_t h,
+                                  GError **err);
